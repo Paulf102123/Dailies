@@ -1,0 +1,29 @@
+{
+  "name": "dailies",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Workers AI (Llama 3.3)
+  "ai": { "binding": "AI" },
+
+  // Static front end
+  "assets": { "directory": "./public" },
+
+  // One StandupAgent (Durable Object with SQLite) per user
+  "durable_objects": {
+    "bindings": [{ "name": "StandupAgent", "class_name": "StandupAgent" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["StandupAgent"] }],
+
+  // Durable post-processing after each standup
+  "workflows": [
+    {
+      "name": "digest-workflow",
+      "binding": "DIGEST_WORKFLOW",
+      "class_name": "DigestWorkflow"
+    }
+  ],
+
+  "observability": { "enabled": true }
+}
