@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dailies</title>
+<style>
+  :root {
+    --fog: #e8edf1;
+    --paper: #f7f9fa;
+    --ink: #16202a;
+    --muted: #5d6b78;
+    --line: #cdd6dd;
+    --signal: #0e6b66;
+    --signal-ink: #ffffff;
+    --flag: #a3264a;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--fog); color: var(--ink);
+    font: 16px/1.5 var(--sans);
+  }
+  .app {
+    display: grid; grid-template-columns: minmax(0, 1fr) 300px;
+    gap: 24px; max-width: 1040px; height: 100%; margin: 0 auto; padding: 24px;
+  }
+  main { display: flex; flex-direction: column; min-height: 0; }
+  h1 { font: 600 1.5rem/1.2 var(--serif); margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 16px; font-size: .9rem; }
+  #log {
+    flex: 1; overflow-y: auto; background: var(--paper);
+    border: 1px solid var(--line); border-radius: 6px; padding: 20px;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .msg { max-width: 62ch; }
+  .msg.agent { font: 1.1rem/1.55 var(--serif); }
+  .msg.you { align-self: flex-end; background: var(--ink); color: #fff; padding: 8px 14px; border-radius: 14px 14px 2px 14px; }
+  .empty { color: var(--muted); font: italic 1.05rem/1.5 var(--serif); margin: auto; text-align: center; }
+  .composer { display: flex; gap: 8px; margin-top: 12px; align-items: flex-end; }
+  textarea {
+    flex: 1; resize: none; font: inherit; padding: 10px 12px; min-height: 44px; max-height: 140px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--ink);
+  }
+  button {
+    font: 500 .95rem var(--sans); min-height: 44px; padding: 0 16px; border-radius: 6px;
+    border: 1px solid var(--ink); background: transparent; color: var(--ink); cursor: pointer;
+  }
+  button.primary { background: var(--signal); border-color: var(--signal); color: var(--signal-ink); }
+  button[aria-pressed="true"] { background: var(--flag); border-color: var(--flag); color: #fff; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  :focus-visible { outline: 3px solid var(--signal); outline-offset: 2px; }
+  aside { overflow-y: auto; min-height: 0; }
+  aside h2 { font: 600 1rem var(--serif); margin: 0 0 8px; }
+  aside section { margin-bottom: 24px; }
+  .blocker { border-left: 3px solid var(--flag); padding: 2px 0 2px 10px; margin-bottom: 8px; }
+  .blocker small { display: block; color: var(--muted); }
+  .digest { background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; }
+  .digest time { display: block; color: var(--muted); font-size: .8rem; margin-bottom: 4px; }
+  .digest pre { margin: 0; white-space: pre-wrap; font: .9rem/1.45 var(--sans); }
+  .none { color: var(--muted); font-size: .9rem; }
+  #status { color: var(--muted); font-size: .85rem; min-height: 1.3em; margin-top: 6px; }
+  @media (max-width: 760px) {
+    .app { grid-template-columns: 1fr; height: auto; min-height: 100%; }
+    #log { min-height: 50vh; }
+  }
+  @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <main>
+    <h1>Dailies</h1>
+    <p class="sub">Talk through your day. I'll keep track of what's blocking you.</p>
+    <div id="log" aria-live="polite"></div>
+    <div id="status"></div>
+    <div class="composer">
+      <textarea id="input" rows="1" placeholder="What did you finish since last time?" aria-label="Your message"></textarea>
+      <button id="mic" aria-pressed="false" title="Dictate with your browser's speech recognition">Speak</button>
+      <button id="send" class="primary">Send</button>
+      <button id="finish">Finish standup</button>
+    </div>
+  </main>
+  <aside>
+    <section>
+      <h2>Open blockers</h2>
+      <div id="blockers"></div>
+    </section>
+    <section>
+      <h2>Recent standups</h2>
+      <div id="history"></div>
+    </section>
+    <section>
+      <button id="daily">Remind me on weekdays</button>
+    </section>
+  </aside>
+</div>
+
+<script>
+  // One agent instance per browser, keyed by a random id kept in localStorage
+  let userId = localStorage.getItem("standup-user");
+  if (!userId) { userId = crypto.randomUUID(); localStorage.setItem("standup-user", userId); }
+
+  const $ = (id) => document.getElementById(id);
+  const log = $("log"), input = $("input"), sendBtn = $("send"), finishBtn = $("finish");
+  let ws, state = { status: "idle", session: [] };
+
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${proto}://${location.host}/agents/standup-agent/${userId}`);
+    ws.onmessage = (e) => {
+      let m; try { m = JSON.parse(e.data); } catch { return; }
+      if (m.type === "sync") { state = m; render(); }
+    };
+    ws.onclose = () => setTimeout(connect, 1500);
+  }
+
+  function render() {
+    log.replaceChildren();
+    if (state.session.length === 0) {
+      const p = document.createElement("p");
+      p.className = "empty";
+      p.textContent = "Tell me what you worked on since last time.";
+      log.append(p);
+    }
+    for (const m of state.session) {
+      const d = document.createElement("div");
+      d.className = "msg " + (m.role === "user" ? "you" : "agent");
+      d.textContent = m.content;
+      log.append(d);
+    }
+    log.scrollTop = log.scrollHeight;
+
+    const busy = state.status === "processing";
+    input.disabled = sendBtn.disabled = busy;
+    finishBtn.disabled = busy || state.session.length === 0;
+    $("status").textContent = busy ? "Writing your digest…" : "";
+
+    const bl = $("blockers"); bl.replaceChildren();
+    if (!state.blockers?.length) bl.innerHTML = '<p class="none">Nothing blocking you right now.</p>';
+    for (const b of state.blockers ?? []) {
+      const d = document.createElement("div"); d.className = "blocker";
+      const days = Math.floor((Date.now() - b.opened_at) / 864e5);
+      d.append(b.text);
+      const s = document.createElement("small");
+      s.textContent = days === 0 ? "Opened today" : `Open ${days} day${days === 1 ? "" : "s"}`;
+      d.append(s); bl.append(d);
+    }
+
+    const h = $("history"); h.replaceChildren();
+    if (!state.history?.length) h.innerHTML = '<p class="none">Finish a standup to see it here.</p>';
+    for (const s of state.history ?? []) {
+      const d = document.createElement("div"); d.className = "digest";
+      const t = document.createElement("time");
+      t.textContent = new Date(s.created_at).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+      const pre = document.createElement("pre"); pre.textContent = s.digest_md;
+      d.append(t, pre); h.append(d);
+    }
+  }
+
+  function send() {
+    const text = input.value.trim();
+    if (!text || ws?.readyState !== 1) return;
+    ws.send(JSON.stringify({ type: "user", text }));
+    input.value = "";
+  }
+
+  sendBtn.onclick = send;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  finishBtn.onclick = () => ws.send(JSON.stringify({ type: "finish" }));
+  $("daily").onclick = () => {
+    ws.send(JSON.stringify({ type: "enable_daily" }));
+    $("daily").textContent = "Weekday reminder is on";
+    $("daily").disabled = true;
+  };
+
+  // Stopgap voice input using the browser's SpeechRecognition.
+  // Swap for Workers AI Whisper (or Realtime) in phase 2.
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const mic = $("mic");
+  if (!SR) { mic.hidden = true; }
+  else {
+    const rec = new SR(); rec.interimResults = false; rec.lang = "en-US";
+    rec.onresult = (e) => { input.value = e.results[0][0].transcript; send(); };
+    rec.onend = () => mic.setAttribute("aria-pressed", "false");
+    mic.onclick = () => {
+      if (mic.getAttribute("aria-pressed") === "true") { rec.stop(); return; }
+      mic.setAttribute("aria-pressed", "true"); rec.start();
+    };
+  }
+
+  connect();
+  render();
+</script>
+</body>
+</html>

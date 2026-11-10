@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/34524395/README.md)
 # Dailies
 
 A voice-ready daily standup agent on Cloudflare: Workers AI (Llama 3.3) + Agents SDK (Durable Object with SQLite) + Workflows + a chat/voice front end.
